@@ -1,0 +1,48 @@
+# Sekrety — NIGDY nie commituj
+.env
+.env.agents
+.env.gpu
+.env.ovh
+.env.local
+*.key
+*.pem
+wireguard/*.conf
+
+# Wyjątki — te pliki są bezpieczne do commitowania
+!.env.example
+!wireguard/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node / Angular
+node_modules/
+dist/
+.angular/
+
+# Docker
+*.tar
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AIGateway-X
+.env.e2e
+.next/

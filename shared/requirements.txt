@@ -1,0 +1,13 @@
+# Shared package — wymagane przez wszystkich agentów
+aio-pika==9.*
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+pydantic==2.*
+httpx==0.27.*
+redis[hiredis]==5.*
+structlog==24.*
+prometheus-client==0.21.*
+python-dotenv==1.*
+
+# WhatsApp (opcjonalnie — zainstaluj w agentach które używają)
+twilio==9.*

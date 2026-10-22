@@ -1,0 +1,63 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: production
+    project: agentic-ai-os
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  - job_name: node_exporter
+    static_configs:
+      - targets: [node_exporter:9100]
+
+  - job_name: rabbitmq
+    static_configs:
+      - targets: [rabbitmq:15692]
+
+  - job_name: redis
+    static_configs:
+      - targets: [redis:9121]     # redis_exporter (dodaj do compose jeśli potrzebny)
+
+  - job_name: postgres
+    static_configs:
+      - targets: [postgres:9187]  # postgres_exporter
+
+  # ─── LiteLLM (serwer GPU przez WireGuard) ──────────────────
+  - job_name: litellm
+    static_configs:
+      - targets: [10.10.0.3:4000]
+    metrics_path: /metrics
+
+  # ─── Agenty (scrape wszystkich agent /metrics) ─────────────
+  - job_name: agents
+    static_configs:
+      - targets:
+          - mastermind:8000
+          - spec-agent:8001
+          - repo-agent:8002
+          - dev-agent:8003
+          - qa-agent:8004
+          - fix-agent:8005
+          - security-agent:8006
+          - devops-agent:8007
+          - smoke-agent:8008
+          - cost-agent:8009
+          - self-improvement-agent:8010
+          - whatsapp-webhook:8011
+          - marketing-mastermind:8012
+          - dashboard-backend:8080
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []  # Dodaj Alertmanager jeśli potrzebny

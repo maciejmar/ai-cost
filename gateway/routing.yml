@@ -1,0 +1,74 @@
+# AIGateway-X — katalog modeli i strategie routingu
+#
+# Strategia (nagłówek X-Gateway-Strategy: cheap | smart | fast | auto)
+# wybiera tier; tier to uporządkowana lista kandydatów. Pierwszy dostępny
+# kandydat obsługuje zapytanie, kolejne są fallbackiem przy 429 / 5xx / timeout
+# albo gdy okno limitu providera jest wyczerpane.
+#
+# Klient może też podać konkretny `model` — wtedy fallback idzie do
+# `equivalents` tego modelu.
+
+models:
+  claude-opus-5-5:
+    provider: anthropic
+    upstream_model: claude-opus-5-5
+    drop_params: [temperature, top_p]     # modele 5.x odrzucają parametry samplingu
+    equivalents: [gpt-4.1, claude-sonnet-5-5]
+  claude-sonnet-5-5:
+    provider: anthropic
+    upstream_model: claude-sonnet-5-5
+    drop_params: [temperature, top_p]
+    equivalents: [gpt-4o, gpt-4.1]
+  claude-haiku-5-5:
+    provider: anthropic
+    upstream_model: claude-haiku-5-5
+    drop_params: [temperature, top_p]
+    equivalents: [gpt-4o-mini, ollama-mistral]
+  gpt-4.1:
+    provider: openai
+    upstream_model: gpt-4.1
+    equivalents: [claude-opus-5-5, gpt-4o]
+  gpt-4.1-mini:
+    provider: openai
+    upstream_model: gpt-4.1-mini
+    equivalents: [gpt-4o-mini, claude-haiku-5-5]
+  gpt-4o:
+    provider: openai
+    upstream_model: gpt-4o
+    equivalents: [claude-sonnet-5-5, gpt-4.1]
+  gpt-4o-mini:
+    provider: openai
+    upstream_model: gpt-4o-mini
+    equivalents: [claude-haiku-5-5, ollama-mistral]
+  # Lokalne modele przez istniejący LiteLLM (serwer GPU, gpu/litellm/litellm_config.yml)
+  ollama-mistral:
+    provider: litellm
+    upstream_model: ollama-mistral
+    equivalents: []
+  ollama-llama3-70b:
+    provider: litellm
+    upstream_model: ollama-llama3-70b
+    equivalents: [ollama-mistral]
+
+# Stare nazwy z gpu/litellm/litellm_config.yml i shared/cost_gate.py → aktualne modele
+aliases:
+  claude-opus-4:   claude-opus-5-5
+  claude-sonnet-4: claude-sonnet-5-5
+  claude-haiku-4:  claude-haiku-5-5
+
+strategies:
+  smart:    [claude-opus-5-5, gpt-4.1, claude-sonnet-5-5]
+  balanced: [claude-sonnet-5-5, gpt-4o, gpt-4.1]
+  cheap:    [claude-haiku-5-5, gpt-4o-mini, ollama-mistral]
+  fast:     [claude-haiku-5-5, gpt-4o-mini, gpt-4.1-mini]
+
+# Strategia `auto` ocenia złożoność promptu (0–1) i wybiera tier:
+#   score >= smart_threshold   → smart
+#   score >= balanced_threshold → balanced
+#   w przeciwnym razie          → cheap
+auto:
+  smart_threshold: 0.6
+  balanced_threshold: 0.3
+
+# Po przekroczeniu miękkiego limitu aplikacji wymuszamy tańszy tier
+soft_limit_strategy: cheap

@@ -1,0 +1,640 @@
+# Company AI OS — Serwer webaby
+# Uruchamianie:
+#   Infrastruktura tylko:  docker compose up -d
+#   Z agentami:            docker compose --profile agents up -d
+#   Z Keycloak:            docker compose --profile keycloak up -d
+
+name: agentic-ai-os
+
+networks:
+  agents_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.1.0/24
+  data_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.20.2.0/24
+  frontend_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.3.0/24
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  grafana_data:
+  loki_data:
+  prometheus_data:
+  portainer_data:
+
+# ─── INFRASTRUKTURA ──────────────────────────────────────────────────────────
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentos}
+      POSTGRES_USER: ${POSTGRES_USER:-agentos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentos}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - DAC_READ_SEARCH
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - data_net
+      - agents_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-agentos}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "127.0.0.1:15672:15672"  # Management UI (localhost only)
+    networks:
+      - agents_net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - agents_net
+    pid: host
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - agents_net
+    ports:
+      - "127.0.0.1:9090:9090"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    networks:
+      - agents_net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - agents_net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: https://grafana.${BASE_DOMAIN:-webaby.io}
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - agents_net
+      - frontend_net
+    depends_on:
+      - prometheus
+      - loki
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    restart: unless-stopped
+    command: --admin-password-file /run/secrets/portainer_password
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    ports:
+      - "127.0.0.1:9443:9443"
+    networks:
+      - agents_net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+# ─── KEYCLOAK (uruchamiaj z: --profile keycloak) ─────────────────────────────
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    profiles: [keycloak]
+    restart: unless-stopped
+    command: start
+    env_file: .env.agents
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agentos}
+      KC_DB_USERNAME: ${POSTGRES_USER:-agentos}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HOSTNAME: auth.${BASE_DOMAIN:-webaby.io}
+      KC_PROXY: edge
+      KC_HTTP_ENABLED: "true"
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:8180:8080"
+    networks:
+      - agents_net
+      - data_net
+      - frontend_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+# ─── AIGATEWAY-X (uruchamiaj z: --profile gateway, startuje też z --profile agents) ──
+
+  gateway:
+    profiles: [gateway, agents]
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentos}
+    ports:
+      - "127.0.0.1:8090:8090"
+    networks:
+      - agents_net      # wyjście do api.openai.com / api.anthropic.com / LiteLLM (GPU)
+      - data_net
+      - frontend_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  gateway-ui:
+    profiles: [gateway, agents]
+    build:
+      context: ./gateway-ui
+      args:
+        GATEWAY_INTERNAL_URL: http://gateway:8090
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks:
+      - frontend_net
+    depends_on:
+      - gateway
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+# ─── AGENTY (uruchamiaj z: --profile agents) ─────────────────────────────────
+# Dostępne po zbudowaniu obrazów w Fazie 2.
+
+  mastermind:
+    profiles: [agents]
+    build: ./agents/mastermind
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: mastermind
+      AGENT_PORT: "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      - agents_net
+      - data_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  spec-agent:
+    profiles: [agents]
+    build: ./agents/spec
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: spec-agent
+      AGENT_PORT: "8001"
+    ports:
+      - "127.0.0.1:8001:8001"
+    networks:
+      - agents_net
+      - data_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  repo-agent:
+    profiles: [agents]
+    build: ./agents/repo
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: repo-agent
+      AGENT_PORT: "8002"
+    ports:
+      - "127.0.0.1:8002:8002"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  dev-agent:
+    profiles: [agents]
+    build: ./agents/dev
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: dev-agent
+      AGENT_PORT: "8003"
+    ports:
+      - "127.0.0.1:8003:8003"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  qa-agent:
+    profiles: [agents]
+    build: ./agents/qa
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: qa-agent
+      AGENT_PORT: "8004"
+    ports:
+      - "127.0.0.1:8004:8004"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  fix-agent:
+    profiles: [agents]
+    build: ./agents/fix
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: fix-agent
+      AGENT_PORT: "8005"
+    ports:
+      - "127.0.0.1:8005:8005"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  security-agent:
+    profiles: [agents]
+    build: ./agents/security
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: security-agent
+      AGENT_PORT: "8006"
+    ports:
+      - "127.0.0.1:8006:8006"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  devops-agent:
+    profiles: [agents]
+    build: ./agents/devops
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: devops-agent
+      AGENT_PORT: "8007"
+    ports:
+      - "127.0.0.1:8007:8007"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  smoke-agent:
+    profiles: [agents]
+    build: ./agents/smoke
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: smoke-agent
+      AGENT_PORT: "8008"
+    ports:
+      - "127.0.0.1:8008:8008"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  cost-agent:
+    profiles: [agents]
+    build: ./agents/cost
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: cost-agent
+      AGENT_PORT: "8009"
+    ports:
+      - "127.0.0.1:8009:8009"
+    networks:
+      - agents_net
+      - data_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  self-improvement-agent:
+    profiles: [agents]
+    build: ./agents/self_improvement
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: self-improvement-agent
+      AGENT_PORT: "8010"
+    ports:
+      - "127.0.0.1:8010:8010"
+    networks:
+      - agents_net
+      - data_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  whatsapp-webhook:
+    profiles: [agents]
+    build: ./agents/whatsapp_webhook
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: whatsapp-webhook
+      AGENT_PORT: "8011"
+    ports:
+      - "127.0.0.1:8011:8011"
+    networks:
+      - agents_net
+      - frontend_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  marketing-mastermind:
+    profiles: [agents]
+    build: ./agents/marketing/mastermind
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: marketing-mastermind
+      AGENT_PORT: "8012"
+    ports:
+      - "127.0.0.1:8012:8012"
+    networks:
+      - agents_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  dashboard-backend:
+    profiles: [agents]
+    build: ./dashboard/backend
+    restart: unless-stopped
+    env_file: .env.agents
+    environment:
+      AGENT_NAME: dashboard-backend
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - agents_net
+      - data_net
+      - frontend_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  dashboard-frontend:
+    profiles: [agents]
+    build: ./dashboard/frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4200:80"
+    networks:
+      - frontend_net
+    read_only: true
+    tmpfs: [/tmp, /var/cache/nginx, /var/run]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

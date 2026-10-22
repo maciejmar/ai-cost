@@ -1,0 +1,173 @@
+# Company AI OS — Serwer GPU (Vast.ai / własny)
+# Uruchamiaj na maszynie z GPU: docker compose -f docker-compose.gpu.yml up -d
+
+name: agentic-ai-os-gpu
+
+networks:
+  llm_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.4.0/24
+
+volumes:
+  ollama_data:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+
+services:
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    networks:
+      - llm_net
+    # Odkomentuj jeśli GPU jest dostępne przez Docker:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - llm_net
+    restart: "no"
+    entrypoint: >
+      sh -c "
+        ollama pull llama3.3:70b-instruct-q4_K_M &&
+        ollama pull mistral:7b &&
+        ollama pull nomic-embed-text
+      "
+    environment:
+      OLLAMA_HOST: ollama:11434
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    restart: unless-stopped
+    env_file: .env.gpu
+    command: >
+      --config /app/litellm_config.yml
+      --port 4000
+      --num_workers 4
+      --telemetry False
+    volumes:
+      - ./gpu/litellm/litellm_config.yml:/app/litellm_config.yml:ro
+    ports:
+      - "127.0.0.1:4000:4000"
+    networks:
+      - llm_net
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Langfuse wymaga własnej PostgreSQL i ClickHouse
+  langfuse-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD}
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    networks:
+      - llm_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - DAC_READ_SEARCH
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+    networks:
+      - llm_net
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  langfuse:
+    image: langfuse/langfuse:latest
+    restart: unless-stopped
+    env_file: .env.gpu
+    environment:
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/langfuse
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD}
+      NEXTAUTH_URL: https://langfuse.${BASE_DOMAIN:-webaby.io}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
+      LANGFUSE_INIT_ORG_ID: company-ai-os
+      LANGFUSE_INIT_ORG_NAME: "Company AI OS"
+      LANGFUSE_INIT_PROJECT_ID: main
+      LANGFUSE_INIT_PROJECT_NAME: "Main"
+      SALT: ${LANGFUSE_SALT}
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - llm_net
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/public/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
