@@ -22,7 +22,8 @@ make gateway                 # gateway :8090 + dashboard :3100 (profil `gateway`
 ```
 
 Pierwsze zarejestrowane konto zostaje adminem. Kolejne rejestracje działają tylko przy `GATEWAY_ALLOW_SIGNUP=true`.
-Na produkcji vhost `gateway.webaby.io` jest w `nginx/sites-enabled/apps.conf`.
+Produkcja: https://ai-cost.webaby.io (serwer 95.158.64.196, vhost [`nginx/ai-cost.webaby.io.conf`](../nginx/ai-cost.webaby.io.conf)).
+Wdrożenia robi GitHub Actions — patrz [`deploy/README.md`](../deploy/README.md).
 
 ## Użycie z agenta
 

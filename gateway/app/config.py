@@ -46,3 +46,22 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# Zaślepki z .env.example — publicznie znane, więc nie mogą trafić na produkcję
+_PLACEHOLDER_MARKERS = ("ZMIEN", "CHANGE-ME", "CHANGE_ME", "TWOJ_")
+
+
+def validate_settings(s: Settings) -> list[str]:
+    """Lista problemów z konfiguracją; pusta = można startować."""
+    from cryptography.fernet import Fernet
+
+    problems: list[str] = []
+    secret = s.gateway_jwt_secret
+    if len(secret) < 32 or any(m in secret.upper() for m in _PLACEHOLDER_MARKERS):
+        problems.append("GATEWAY_JWT_SECRET must be a random string of at least 32 characters (not the .env.example placeholder)")
+    try:
+        Fernet(s.gateway_encryption_key.encode())
+    except (ValueError, TypeError):
+        problems.append("GATEWAY_ENCRYPTION_KEY must be a valid Fernet key (urlsafe base64 of 32 random bytes)")
+    return problems

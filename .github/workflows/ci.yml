@@ -1,0 +1,151 @@
+# CI — testy i buildy. Na PR uruchamia się samo; na master wywołuje je deploy.yml (workflow_call).
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    name: Gateway — testy jednostkowe + e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agentos
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: agentos
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U agentos"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: gateway
+    env:
+      DATABASE_URL: postgresql://agentos:ci@localhost:5432/agentos
+      REDIS_URL: redis://localhost:6379/0
+      GATEWAY_JWT_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+      GATEWAY_COOKIE_SECURE: "false"
+      OPENAI_BASE_URL: http://localhost:9999/openai/v1
+      ANTHROPIC_BASE_URL: http://localhost:9999/anthropic/v1
+      LITELLM_URL: http://localhost:9999/litellm
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: gateway/requirements.txt
+
+      - name: Zależności
+        run: pip install -r requirements.txt openai
+
+      - name: Testy jednostkowe
+        run: python -m pytest -q
+
+      - name: Start atrapy upstream i bramki
+        run: |
+          GATEWAY_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())')"
+          export GATEWAY_ENCRYPTION_KEY
+          nohup uvicorn tests.fake_upstream:app --port 9999 > fake.log 2>&1 &
+          nohup uvicorn app.main:app --port 8090 > gateway.log 2>&1 &
+          for _ in $(seq 30); do curl -fsS http://localhost:8090/health && exit 0; sleep 1; done
+          echo "Bramka nie wstała"; cat gateway.log; exit 1
+
+      - name: Testy e2e (oficjalny SDK openai jako klient)
+        run: python tests/e2e.py http://localhost:8090 http://localhost:9999
+
+      - name: Logi bramki
+        if: failure()
+        run: cat gateway.log fake.log || true
+
+  gateway-ui:
+    name: Dashboard — build (typy + kompilacja)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: gateway-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: gateway-ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  config:
+    name: Compose + pakiet shared
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Walidacja plików Compose
+        run: |
+          # .env.example nie jest w repo — atrapa wystarcza do sprawdzenia składni
+          printf '%s\n' POSTGRES_PASSWORD=ci REDIS_PASSWORD=ci RABBITMQ_PASSWORD=ci GRAFANA_PASSWORD=ci \
+            KEYCLOAK_ADMIN_PASSWORD=ci LANGFUSE_DB_PASSWORD=ci LANGFUSE_CLICKHOUSE_PASSWORD=ci > .env.agents
+          cp .env.agents .env.gpu
+          docker compose -f docker-compose.webaby.yml --env-file .env.agents --profile gateway config -q
+          docker compose -f docker-compose.gpu.yml --env-file .env.gpu config -q
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Kompilacja shared/
+        run: python -m compileall -q shared
+
+      - name: Składnia skryptu wdrożenia
+        run: bash -n deploy/deploy.sh
+
+  docker:
+    name: Obraz ${{ matrix.image }} (bez publikacji)
+    # Na master obrazy buduje i publikuje deploy.yml — tu tylko sprawdzamy Dockerfile w PR
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: gateway
+            context: .
+            file: gateway/Dockerfile
+          - image: gateway-ui
+            context: gateway-ui
+            file: gateway-ui/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

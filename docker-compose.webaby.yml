@@ -6,23 +6,15 @@
 
 name: agentic-ai-os
 
+# Bez stałych podsieci — Docker wybiera wolne pule (stałe 172.20.x kolidowały z sieciami innych projektów, np. office-assistant)
 networks:
   agents_net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.1.0/24
   data_net:
     driver: bridge
     internal: true
-    ipam:
-      config:
-        - subnet: 172.20.2.0/24
   frontend_net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.3.0/24
 
 volumes:
   postgres_data:
@@ -87,6 +79,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:            # entrypoint przełącza się z root na użytkownika redis
+      - SETUID
+      - SETGID
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -255,6 +250,8 @@ services:
 
   gateway:
     profiles: [gateway, agents]
+    # CD pobiera gotowy obraz z GHCR (deploy/deploy.sh); lokalnie `make gateway` buduje go z build:
+    image: ${IMAGE_PREFIX:-ghcr.io/maciejmar/ai-cost}/gateway:${GATEWAY_TAG:-latest}
     build:
       context: .
       dockerfile: gateway/Dockerfile
@@ -263,7 +260,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentos}
     ports:
-      - "127.0.0.1:8090:8090"
+      - "127.0.0.1:${GATEWAY_HOST_PORT:-8090}:8090"   # port na hoście z .env.agents (na webaby 8090 jest zajęty)
     networks:
       - agents_net      # wyjście do api.openai.com / api.anthropic.com / LiteLLM (GPU)
       - data_net
@@ -282,13 +279,14 @@ services:
 
   gateway-ui:
     profiles: [gateway, agents]
+    image: ${IMAGE_PREFIX:-ghcr.io/maciejmar/ai-cost}/gateway-ui:${GATEWAY_TAG:-latest}
     build:
       context: ./gateway-ui
       args:
         GATEWAY_INTERNAL_URL: http://gateway:8090
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3100:3100"
+      - "127.0.0.1:${GATEWAY_UI_HOST_PORT:-3100}:3100"
     networks:
       - frontend_net
     depends_on:

@@ -205,3 +205,22 @@ def test_period_bounds():
     key, reset = period_bounds("week", now)
     assert key == "2026-W43" and reset == datetime(2026, 10, 26, tzinfo=timezone.utc)
     assert period_bounds("month", now) == ("2026-10", datetime(2026, 11, 1, tzinfo=timezone.utc))
+
+
+# ─── Walidacja konfiguracji ───────────────────────────────────────────────
+
+def test_validate_settings_rejects_env_example_placeholders():
+    from app.config import Settings, validate_settings
+
+    bad = Settings(gateway_jwt_secret="ZMIEN_NA_LOSOWY_SECRET_MIN_32_ZNAKI", gateway_encryption_key="ZMIEN_NA_KLUCZ_FERNET")
+    assert len(validate_settings(bad)) == 2
+
+
+def test_validate_settings_accepts_generated_values():
+    import base64, secrets
+    from app.config import Settings, validate_settings
+
+    # Ta sama postać co `openssl rand -base64 32 | tr '+/' '-_'` w deploy/README.md
+    key = base64.b64encode(secrets.token_bytes(32)).decode().replace("+", "-").replace("/", "_")
+    good = Settings(gateway_jwt_secret=secrets.token_hex(32), gateway_encryption_key=key)
+    assert validate_settings(good) == []

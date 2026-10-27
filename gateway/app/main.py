@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
 from . import db, providers
-from .config import get_settings
+from .config import get_settings, validate_settings
 from .routers import apps, auth, credentials, pricing, proxy, stats
 
 structlog.configure(
@@ -25,11 +25,9 @@ log = structlog.get_logger().bind(service="gateway")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    s = get_settings()
-    if s.gateway_jwt_secret == "change-me" or len(s.gateway_jwt_secret) < 32:
-        raise RuntimeError("GATEWAY_JWT_SECRET must be set to a random string of at least 32 characters")
-    if not s.gateway_encryption_key:
-        raise RuntimeError("GATEWAY_ENCRYPTION_KEY must be set (Fernet key) to store provider credentials")
+    problems = validate_settings(get_settings())
+    if problems:
+        raise RuntimeError("Invalid configuration: " + "; ".join(problems))
     await db.init()
     await providers.init()
     log.info("Gateway ready")

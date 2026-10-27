@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /gateway
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /gateway-ui
+    schedule: { interval: weekly }
+    groups:
+      dashboard:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directories: [/gateway, /gateway-ui]
+    schedule: { interval: weekly }
