@@ -10,7 +10,7 @@ structlog==24.*
 prometheus-client==0.21.*
 pyjwt==2.*
 bcrypt==4.*
-cryptography==43.*
+cryptography==50.*
 pyyaml==6.*
 
 # testy
