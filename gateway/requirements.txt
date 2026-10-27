@@ -9,7 +9,7 @@ redis[hiredis]==5.*
 structlog==24.*
 prometheus-client==0.21.*
 pyjwt==2.*
-bcrypt==4.*
+bcrypt==5.*
 cryptography==43.*
 pyyaml==6.*
 
