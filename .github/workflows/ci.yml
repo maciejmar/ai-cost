@@ -50,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -113,7 +113,7 @@ jobs:
           docker compose -f docker-compose.webaby.yml --env-file .env.agents --profile gateway config -q
           docker compose -f docker-compose.gpu.yml --env-file .env.gpu config -q
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
